@@ -16,7 +16,7 @@ except:
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.title("🎬 Training Recap Video Generator (Detailed Recap)")
+st.title("🎬 Training Recap Video Generator (Detailed + Longer Video)")
 
 uploaded_files = st.file_uploader(
     "Upload transcripts",
@@ -39,7 +39,7 @@ def add_pauses(text):
     text = text.replace(",", ", ")
     return text
 
-# ---------- STRUCTURED SLIDES (UPDATED) ----------
+# ---------- STRUCTURED SLIDES (MORE DETAILED) ----------
 def generate_structured_slides(full_text):
     res = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -53,29 +53,28 @@ Return JSON:
 {{
   "slides": [
     {{
-      "title": "Topic",
-      "points": ["point1", "point2", "point3", "point4"],
-      "narration": "multiple short sentences explaining topic with example"
+      "title": "Exact topic name",
+      "points": ["point1", "point2", "point3", "point4", "point5"],
+      "narration": "detailed explanation"
     }}
   ]
 }}
 
-STRICT RULES:
+RULES:
 
-CONTENT:
-- Cover ALL important topics
-- Maintain correct order
-- Include examples where available
+TOPICS:
+- Cover ALL key topics (vector database, embeddings, RAG, etc.)
+- Maintain original order
+- Each topic = separate slide
 
 SLIDES:
-- 3 to 5 bullet points
-- Keep bullets short and clear
+- 4–6 bullet points
+- Clear and concise
 
 NARRATION:
-- Use short sentences (10–12 words each)
-- Include 4–6 sentences per slide
-- Explain concept clearly
-- Add simple example if available
+- 6–8 short sentences
+- Each sentence 10–12 words
+- Include explanation + example + context
 
 TONE:
 - Simple corporate language
@@ -113,7 +112,7 @@ def generate_audio(slides):
                 loop.run_until_complete(edge_generate(text, fname))
                 loop.close()
             else:
-                raise Exception("Edge TTS not available")
+                raise Exception()
 
         except:
             from gtts import gTTS
@@ -158,9 +157,10 @@ def create_video(slides, audio_files):
         img = create_slide(text)
         audio = AudioFileClip(audio_files[i])
 
-        # slight pause added (+0.5 sec)
-        clip = ImageClip(img).set_duration(audio.duration + 0.5)
-        clip = clip.fadein(0.3).fadeout(0.3)
+        extra_time = 2.0  # 🔥 longer slide duration
+        clip = ImageClip(img).set_duration(audio.duration + extra_time)
+
+        clip = clip.fadein(0.4).fadeout(0.4)
 
         clips.append(clip)
         audios.append(audio)
