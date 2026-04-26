@@ -33,6 +33,12 @@ def remove_speaker(text, speaker="Ravi"):
         )
     ])
 
+# ---------- ADD PAUSES ----------
+def add_pauses(text):
+    text = text.replace(".", ". ")
+    text = text.replace(",", ", ")
+    return text
+
 # ---------- STRUCTURED SLIDES ----------
 def generate_structured_slides(full_text):
     res = client.chat.completions.create(
@@ -41,7 +47,7 @@ def generate_structured_slides(full_text):
         messages=[{
             "role": "user",
             "content": f"""
-Create a structured recap.
+Create structured recap slides.
 
 Return JSON:
 {{
@@ -49,15 +55,17 @@ Return JSON:
     {{
       "title": "Topic",
       "points": ["point1", "point2"],
-      "narration": "clear explanation with example"
+      "narration": "short sentences with pauses"
     }}
   ]
 }}
 
-Rules:
+STRICT RULES:
+- Use VERY short sentences (10–12 words max)
+- Add commas for natural pauses
+- Avoid long explanations
 - Maintain correct order
 - Include all key topics
-- Use short sentences
 - Avoid: speaker, lecture, session, today
 
 Text:
@@ -75,15 +83,15 @@ def generate_audio(slides):
     async def edge_generate(text, filename):
         communicate = edge_tts.Communicate(
             text=text,
-            voice="en-US-AriaNeural",  # female natural voice
-            rate="+5%",               # 🔥 balanced speed (clear)
-            volume="+0%"
+            voice="en-US-AriaNeural",  # natural female
+            rate="+0%",               # 🔥 no speed distortion
+            pitch="+0Hz"
         )
         await communicate.save(filename)
 
     for i, slide in enumerate(slides):
         fname = f"audio_{i}.mp3"
-        text = slide["narration"]
+        text = add_pauses(slide["narration"])
 
         try:
             if EDGE_AVAILABLE:
@@ -148,19 +156,12 @@ def create_video(slides, audio_files):
 
     video = video.set_audio(audio)
 
-    # duration control (3–5 min)
-    dur = audio.duration
-    if dur < 180:
-        video = video.fx(vfx.speedx, dur/180)
-    elif dur > 300:
-        video = video.fx(vfx.speedx, dur/300)
-
     video.write_videofile(
         "final_video.mp4",
         fps=24,
         codec="libx264",
         audio_codec="aac",
-        audio_bitrate="192k"   # 🔥 HIGH QUALITY AUDIO
+        audio_bitrate="192k"
     )
 
     return "final_video.mp4"
