@@ -17,7 +17,7 @@ else:
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.title("🎬 Session Recap Video Generator")
+st.title("🎬 Session Recap Video Generator (Synced)")
 
 uploaded_file = st.file_uploader("Upload transcript (.txt)", type=["txt"])
 
@@ -31,7 +31,7 @@ def safe_json_load(text):
         return json.loads(match.group())
 
 
-# -------- RECAP SUMMARY (PAST TENSE) --------
+# -------- RECAP SUMMARY --------
 def generate_summary(transcript):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -40,26 +40,15 @@ def generate_summary(transcript):
             {
                 "role": "user",
                 "content": f"""
-Create a recap of this session in PAST TENSE.
-
-IMPORTANT:
-- Use past tense only (covered, discussed, explained)
-- Do NOT use present tense
+Create a recap in past tense.
 
 Style:
-- Start with: "In this session, we covered..."
-- Then continue with:
-  "We discussed..."
-  "Then we explored..."
-  "After that, we looked at..."
-  "Finally, we concluded..."
+- "In this session, we covered..."
+- "We discussed..."
+- "Then we explored..."
+- "Finally..."
 
-Tone:
-- Natural
-- Smooth storytelling
-- Like summarizing a completed lecture
-
-Keep it suitable for 3–5 minute narration.
+Natural, smooth narration.
 
 Transcript:
 {transcript[:8000]}
@@ -70,81 +59,80 @@ Transcript:
     return response.choices[0].message.content
 
 
-# -------- FORCE PAST TENSE (SAFETY) --------
-def enforce_past_tense(text):
-    replacements = {
-        "we discuss": "we discussed",
-        "we explain": "we explained",
-        "we explore": "we explored",
-        "we look at": "we looked at",
-        "we cover": "we covered",
-        "we learn": "we learned",
-    }
-    for k, v in replacements.items():
-        text = text.replace(k, v)
-    return text
+# -------- SPLIT INTO SEGMENTS --------
+def split_into_segments(summary, num_slides=6):
+    sentences = summary.split(". ")
+    chunk_size = max(1, len(sentences) // num_slides)
+
+    segments = []
+    for i in range(0, len(sentences), chunk_size):
+        segment = ". ".join(sentences[i:i+chunk_size])
+        segments.append(segment)
+
+    return segments[:num_slides]
 
 
-# -------- SLIDES --------
-def generate_slides(summary):
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0,
-        response_format={"type": "json_object"},
-        messages=[
-            {
-                "role": "user",
-                "content": f"""
-Convert this recap into slides.
+# -------- GENERATE SLIDES --------
+def generate_slides(segments):
+    slides = []
+
+    for seg in segments:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""
+Create ONE slide.
 
 Return JSON:
 {{
-  "slides": [
-    {{
-      "title": "Short title",
-      "points": ["short point", "short point"]
-    }}
-  ]
+  "title": "Short title",
+  "points": ["short point", "short point"]
 }}
 
-Rules:
-- 6–8 slides
-- Max 3 bullet points
-- VERY short text (keywords only)
+Max 3 bullet points.
+Keep text very short.
 
-Recap:
-{summary}
+Text:
+{seg}
 """
-            }
-        ]
-    )
-    return response.choices[0].message.content
-
-
-# -------- SLOW SCRIPT --------
-def slow_script(script):
-    return script.replace(".", ". ... ")
-
-
-# -------- AUDIO --------
-def text_to_audio(script):
-    script = slow_script(script)
-
-    if USE_ELEVENLABS:
-        audio = generate(
-            text=script,
-            voice="Rachel",
-            model="eleven_multilingual_v2"
+                }
+            ]
         )
-        save(audio, "audio.mp3")
-    else:
-        tts = gTTS(script)
-        tts.save("audio.mp3")
 
-    return "audio.mp3"
+        slide = safe_json_load(response.choices[0].message.content)
+        slides.append(slide)
+
+    return slides
 
 
-# -------- SLIDE IMAGE --------
+# -------- AUDIO PER SEGMENT --------
+def generate_audio_segments(segments):
+    audio_files = []
+
+    for i, seg in enumerate(segments):
+        filename = f"audio_{i}.mp3"
+
+        if USE_ELEVENLABS:
+            audio = generate(
+                text=seg,
+                voice="Rachel",
+                model="eleven_multilingual_v2"
+            )
+            save(audio, filename)
+        else:
+            tts = gTTS(seg)
+            tts.save(filename)
+
+        audio_files.append(filename)
+
+    return audio_files
+
+
+# -------- CREATE TEXT IMAGE --------
 def create_text_image(text):
     img = Image.new("RGB", (1280, 720), color=(255, 255, 255))
     draw = ImageDraw.Draw(img)
@@ -155,7 +143,7 @@ def create_text_image(text):
 
     try:
         title_font = ImageFont.truetype(title_font_path, 60)
-        body_font = ImageFont.truetype(body_font_path, 30)
+        body_font = ImageFont.truetype(body_font_path, 20)
     except:
         title_font = ImageFont.load_default()
         body_font = ImageFont.load_default()
@@ -176,27 +164,30 @@ def create_text_image(text):
     return np.array(img)
 
 
-# -------- VIDEO --------
-def create_video(slides_json, audio_file):
-    data = safe_json_load(slides_json)
-    slides = data["slides"]
-
-    audio = AudioFileClip(audio_file).set_fps(44100)
-
-    total_duration = audio.duration
-    slide_duration = total_duration / len(slides)
-
+# -------- CREATE VIDEO --------
+def create_video(slides, audio_files):
     clips = []
+    audio_clips = []
+    current_time = 0
 
-    for slide in slides:
+    for i, slide in enumerate(slides):
         text = slide["title"] + "\n\n" + "\n".join([f"• {p}" for p in slide["points"]])
 
         img = create_text_image(text)
-        clip = ImageClip(img).set_duration(slide_duration)
+
+        audio = AudioFileClip(audio_files[i])
+        duration = audio.duration
+
+        clip = ImageClip(img).set_start(current_time).set_duration(duration)
 
         clips.append(clip)
+        audio_clips.append(audio)
 
-    video = concatenate_videoclips(clips).set_audio(audio)
+        current_time += duration
+
+    final_audio = concatenate_audioclips(audio_clips)
+
+    video = CompositeVideoClip(clips).set_audio(final_audio)
 
     video.write_videofile(
         "final_video.mp4",
@@ -216,16 +207,16 @@ if uploaded_file:
         try:
             with st.spinner("Generating recap..."):
                 summary = generate_summary(transcript)
-                summary = enforce_past_tense(summary)
 
             st.subheader("📄 Recap")
             st.write(summary)
 
-            with st.spinner("Creating video..."):
-                slides_json = generate_slides(summary)
+            with st.spinner("Creating synced video..."):
+                segments = split_into_segments(summary)
+                slides = generate_slides(segments)
+                audio_files = generate_audio_segments(segments)
 
-                audio = text_to_audio(summary)  # narration = recap
-                video = create_video(slides_json, audio)
+                video = create_video(slides, audio_files)
 
             st.success("✅ Video Ready!")
             st.video(video)
