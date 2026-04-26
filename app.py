@@ -16,7 +16,7 @@ else:
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.title("🎬 Training Recap Video Generator (Full Coverage)")
+st.title("🎬 Training Recap Video Generator (Accurate + Ordered)")
 
 uploaded_files = st.file_uploader(
     "Upload transcripts",
@@ -24,70 +24,59 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-# ---------- REMOVE RAVI ----------
+# ---------- REMOVE SPEAKER ----------
 def remove_speaker(text, speaker="Ravi"):
-    lines = text.split("\n")
     return "\n".join([
-        l for l in lines
+        l for l in text.split("\n")
         if not l.strip().lower().startswith(
             (speaker.lower()+":", speaker.lower()+" -", speaker.lower()+"(")
         )
     ])
 
-# ---------- EXTRACT TOPICS ----------
-def extract_topics(text):
-    res = client.chat.completions.create(
+# ---------- CLEAN ----------
+def clean_text(text):
+    banned = ["speaker", "lecture", "session", "today"]
+    for w in banned:
+        text = text.replace(w, "")
+    return text
+
+# ---------- 🔥 CORE FIX: STRUCTURED SLIDES ----------
+def generate_structured_slides(full_text):
+    response = client.chat.completions.create(
         model="gpt-4o-mini",
         response_format={"type": "json_object"},
         messages=[{
             "role": "user",
             "content": f"""
-Extract ALL key topics.
-
-Return JSON:
-{{ "topics": ["topic1", "topic2"] }}
-
-Do NOT miss any important topic.
-
-Text:
-{text[:8000]}
-"""
-        }]
-    )
-    return json.loads(res.choices[0].message.content)["topics"]
-
-# ---------- EXPAND TOPICS ----------
-def expand_topics(topics):
-    slides = []
-
-    for topic in topics:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            response_format={"type": "json_object"},
-            messages=[{
-                "role": "user",
-                "content": f"""
-Create slide + narration.
+Create a structured recap.
 
 Return JSON:
 {{
-"title": "{topic}",
-"points": ["short point", "short point"],
-"narration": "2-3 sentence explanation"
+  "slides": [
+    {{
+      "title": "Topic name",
+      "points": ["key point", "key point"],
+      "narration": "clear explanation with example if available"
+    }}
+  ]
 }}
 
-Keep simple corporate language.
-Narration must match slide.
+STRICT RULES:
+- Do NOT miss important topics (e.g., vector database)
+- Maintain logical order
+- One topic per slide
+- Include examples from content if present
+- Use simple corporate language
+- Narration must match slide points
+- Avoid words: speaker, lecture, session, today
 
-Topic:
-{topic}
+Text:
+{full_text[:12000]}
 """
-            }]
-        )
+        }]
+    )
 
-        slides.append(json.loads(res.choices[0].message.content))
-
-    return slides
+    return json.loads(response.choices[0].message.content)["slides"]
 
 # ---------- AUDIO ----------
 def generate_audio(slides):
@@ -104,9 +93,9 @@ def generate_audio(slides):
             else:
                 gTTS(text, slow=False).save(fname)
 
-            # speed up
+            # 🔥 speed fix
             clip = AudioFileClip(fname)
-            fast = clip.fx(vfx.speedx, 1.2)
+            fast = clip.fx(vfx.speedx, 1.15)
             fast_name = f"fast_{i}.mp3"
             fast.write_audiofile(fast_name)
 
@@ -149,6 +138,7 @@ def create_video(slides, audio_files):
 
     for i, s in enumerate(slides):
         text = s["title"] + "\n\n" + "\n".join([f"• {p}" for p in s["points"]])
+
         img = create_slide(text)
         audio = AudioFileClip(audio_files[i])
 
@@ -163,7 +153,7 @@ def create_video(slides, audio_files):
 
     video = video.set_audio(audio)
 
-    # ensure 3–5 mins
+    # 🎯 duration 3–5 mins
     dur = audio.duration
     if dur < 180:
         video = video.fx(vfx.speedx, dur/180)
@@ -181,26 +171,18 @@ def create_video(slides, audio_files):
 
 # ---------- MAIN ----------
 if uploaded_files:
-    if st.button("Generate Full Recap Video"):
+    if st.button("Generate Recap Video"):
         try:
-            all_topics = []
+            full_text = ""
 
             for f in uploaded_files:
                 text = f.read().decode("utf-8")
                 text = remove_speaker(text, "Ravi")
+                full_text += "\n\n" + text
 
-                topics = extract_topics(text)
-                all_topics.extend(topics)
+            slides = generate_structured_slides(full_text)
 
-            # remove duplicates
-            all_topics = list(dict.fromkeys(all_topics))
-
-            st.write("### Extracted Topics")
-            st.write(all_topics)
-
-            slides = expand_topics(all_topics)
             audio_files = generate_audio(slides)
-
             video = create_video(slides, audio_files)
 
             st.success("✅ Video Ready")
