@@ -17,7 +17,7 @@ else:
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.title("🎬 Transcript → Summary → Video Generator")
+st.title("🎬 Faculty Recap Video Generator")
 
 uploaded_file = st.file_uploader("Upload transcript (.txt)", type=["txt"])
 
@@ -31,21 +31,24 @@ def safe_json_load(text):
         return json.loads(match.group())
 
 
-# -------- SUMMARY --------
+# -------- FACULTY STYLE SUMMARY --------
 def generate_summary(transcript):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
-        temperature=0.3,
+        temperature=0.4,
         messages=[
             {
                 "role": "user",
                 "content": f"""
-Summarize this transcript clearly.
+You are a faculty explaining a recorded lecture.
 
-Include:
-- Key points
-- Important insights
-- Keep it concise and structured
+Create a recap like a teacher explaining to students.
+
+Style:
+- Natural conversational tone
+- Explain clearly
+- Add simple examples if needed
+- Smooth flow (not bullet points)
 
 Transcript:
 {transcript[:8000]}
@@ -56,7 +59,7 @@ Transcript:
     return response.choices[0].message.content
 
 
-# -------- SLIDES --------
+# -------- SLIDES FROM SUMMARY --------
 def generate_slides(summary):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -66,7 +69,7 @@ def generate_slides(summary):
             {
                 "role": "user",
                 "content": f"""
-Convert summary into presentation slides.
+Convert this teaching explanation into slides.
 
 Return JSON:
 {{
@@ -79,8 +82,9 @@ Return JSON:
 }}
 
 Rules:
-- 6–10 slides
-- Clear bullet points
+- 6–8 slides
+- MAX 3 bullet points per slide
+- Very short text (for big font)
 
 Summary:
 {summary}
@@ -89,19 +93,6 @@ Summary:
         ]
     )
     return response.choices[0].message.content
-
-
-# -------- SCRIPT --------
-def slides_to_script(slides_json):
-    data = safe_json_load(slides_json)
-    slides = data["slides"]
-
-    script = ""
-    for slide in slides:
-        script += slide["title"] + ". "
-        script += " ".join(slide["points"]) + ". "
-
-    return script[:3500]
 
 
 # -------- SLOW SCRIPT --------
@@ -132,50 +123,62 @@ def create_text_image(text):
     img = Image.new("RGB", (1280, 720), color=(255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # 🔥 Use local fonts
-    title_font_path = os.path.join("fonts", "DejaVuSans-Bold.ttf")
-    body_font_path = os.path.join("fonts", "DejaVuSans.ttf")
+    base_dir = os.path.dirname(__file__)
+    title_font_path = os.path.join(base_dir, "fonts", "DejaVuSans-Bold.ttf")
+    body_font_path = os.path.join(base_dir, "fonts", "DejaVuSans.ttf")
 
     try:
-        title_font = ImageFont.truetype(title_font_path, 60)
-        body_font = ImageFont.truetype(body_font_path, 30)
+        title_font = ImageFont.truetype(title_font_path, 140)
+        body_font = ImageFont.truetype(body_font_path, 90)
     except:
         title_font = ImageFont.load_default()
         body_font = ImageFont.load_default()
 
     lines = text.split("\n")
 
-    draw.text((80, 80), lines[0], font=title_font, fill=(0, 0, 0))
+    # Center title
+    bbox = draw.textbbox((0, 0), lines[0], font=title_font)
+    text_width = bbox[2] - bbox[0]
+    draw.text(((1280 - text_width) // 2, 80), lines[0], font=title_font, fill=(0, 0, 0))
 
-    y = 260
+    y = 300
     for line in lines[1:]:
-        draw.text((100, y), line, font=body_font, fill=(0, 0, 0))
-        y += 110
+        draw.text((120, y), line, font=body_font, fill=(0, 0, 0))
+        y += 140
 
     return np.array(img)
 
 
-# -------- VIDEO --------
-def create_video(slides_json, audio_file):
+# -------- VIDEO (SYNCED) --------
+def create_video(slides_json, audio_file, narration_text):
     data = safe_json_load(slides_json)
     slides = data["slides"]
 
     audio = AudioFileClip(audio_file).set_fps(44100)
 
-    target_duration = max(180, min(audio.duration, 300))
-    slide_duration = target_duration / len(slides)
-
     clips = []
+    current_time = 0
 
-    for slide in slides:
+    # Split narration into parts
+    sentences = narration_text.split(". ")
+
+    for i, slide in enumerate(slides):
         text = slide["title"] + "\n\n" + "\n".join([f"• {p}" for p in slide["points"]])
 
+        # Assign narration chunk
+        chunk = " ".join(sentences[i::len(slides)])
+
+        word_count = len(chunk.split())
+        duration = max(6, word_count / 2.2)
+
         img = create_text_image(text)
-        clip = ImageClip(img).set_duration(slide_duration)
+
+        clip = ImageClip(img).set_start(current_time).set_duration(duration)
 
         clips.append(clip)
+        current_time += duration
 
-    video = concatenate_videoclips(clips).set_audio(audio)
+    video = CompositeVideoClip(clips).set_audio(audio)
 
     video.write_videofile(
         "final_video.mp4",
@@ -191,22 +194,22 @@ def create_video(slides_json, audio_file):
 if uploaded_file:
     transcript = uploaded_file.read().decode("utf-8")
 
-    if st.button("Generate Summary + Video"):
+    if st.button("Generate Recap Video"):
         try:
-            with st.spinner("Generating summary..."):
+            with st.spinner("Generating explanation..."):
                 summary = generate_summary(transcript)
 
-            st.subheader("📄 Summary")
+            st.subheader("📄 Faculty Explanation")
             st.write(summary)
 
-            with st.spinner("Generating video..."):
+            with st.spinner("Creating video..."):
                 slides_json = generate_slides(summary)
 
-                script = slides_to_script(slides_json)
-                audio = text_to_audio(script)
-                video = create_video(slides_json, audio)
+                audio = text_to_audio(summary)   # 🔥 use natural narration
 
-            st.success("✅ Done!")
+                video = create_video(slides_json, audio, summary)
+
+            st.success("✅ Video Ready!")
             st.video(video)
 
         except Exception as e:
