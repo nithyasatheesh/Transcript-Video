@@ -8,15 +8,11 @@ from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
-# Init OpenAI
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.set_page_config(page_title="Slide Video Generator")
+st.title("🎬 Slide Video Generator (White Theme)")
 
-st.title("🎬 AI Slide Video Generator")
-st.write("Upload transcript → get slide-based recap video")
-
-uploaded_file = st.file_uploader("Upload transcript (.txt)", type=["txt"])
+uploaded_file = st.file_uploader("Upload transcript", type=["txt"])
 
 
 # -------- SAFE JSON --------
@@ -25,9 +21,7 @@ def safe_json_load(text):
         return json.loads(text)
     except:
         match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            return json.loads(match.group())
-        raise ValueError("Invalid JSON from model")
+        return json.loads(match.group())
 
 
 # -------- GENERATE SLIDES --------
@@ -40,22 +34,22 @@ def generate_slides(transcript):
             {
                 "role": "user",
                 "content": f"""
-Return ONLY valid JSON.
+Convert transcript into slides for a 3–5 minute video.
 
-Format:
+Return JSON:
 {{
   "slides": [
     {{
-      "title": "Slide title",
+      "title": "Title",
       "points": ["point1", "point2"]
     }}
   ]
 }}
 
 Rules:
-- 5–8 slides
-- Max 5 bullet points
-- Short text
+- 6–10 slides
+- Short bullet points
+- Clean structure
 
 Transcript:
 {transcript[:6000]}
@@ -77,79 +71,73 @@ def slides_to_script(slides_json):
         script += slide["title"] + ". "
         script += " ".join(slide["points"]) + ". "
 
-    return script[:3000]
+    return script[:3500]
 
 
-# -------- TEXT TO AUDIO --------
+# -------- AUDIO --------
 def text_to_audio(script):
-    audio_file = "audio.mp3"
-
     tts = gTTS(script)
-    tts.save(audio_file)
-
-    if os.path.getsize(audio_file) < 1000:
-        raise ValueError("Audio file corrupted")
-
-    return audio_file
+    tts.save("audio.mp3")
+    return "audio.mp3"
 
 
-# -------- CREATE TEXT IMAGE (NO IMAGEMAGICK) --------
+# -------- CREATE SLIDE IMAGE --------
 def create_text_image(text, size=(1280, 720)):
-    img = Image.new("RGB", size, color=(30, 30, 30))
+    img = Image.new("RGB", size, color=(255, 255, 255))  # WHITE BG
     draw = ImageDraw.Draw(img)
 
     try:
-        title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 60)
-        body_font = ImageFont.truetype("DejaVuSans.ttf", 40)
+        title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 80)  # BIGGER
+        body_font = ImageFont.truetype("DejaVuSans.ttf", 50)
     except:
         title_font = ImageFont.load_default()
         body_font = ImageFont.load_default()
 
     lines = text.split("\n")
 
-    y = 100
+    y = 120
     for i, line in enumerate(lines):
         font = title_font if i == 0 else body_font
-        draw.text((60, y), line, font=font, fill=(255, 255, 255))
-        y += 80
+        draw.text((80, y), line, font=font, fill=(0, 0, 0))  # BLACK TEXT
+        y += 90
 
     return np.array(img)
 
 
-# -------- CREATE VIDEO --------
+# -------- VIDEO --------
 def create_video(slides_json, audio_file):
     data = safe_json_load(slides_json)
     slides = data["slides"]
 
     audio = AudioFileClip(audio_file).set_fps(44100)
-    duration = audio.duration
-    slide_duration = duration / len(slides)
+
+    # 🔥 Force 3–5 min duration
+    target_duration = max(180, min(audio.duration, 300))
+
+    slide_duration = target_duration / len(slides)
 
     clips = []
 
     for slide in slides:
         text = slide["title"] + "\n\n" + "\n".join([f"• {p}" for p in slide["points"]])
 
-        img_array = create_text_image(text)
+        img = create_text_image(text)
 
-        slide_clip = ImageClip(img_array).set_duration(slide_duration)
+        clip = ImageClip(img).set_duration(slide_duration)
+        clip = clip.fadein(0.5).fadeout(0.5)
 
-        slide_clip = slide_clip.fadein(0.3).fadeout(0.3)
+        clips.append(clip)
 
-        clips.append(slide_clip)
+    video = concatenate_videoclips(clips).set_audio(audio)
 
-    final_video = concatenate_videoclips(clips).set_audio(audio)
-
-    output = "final_video.mp4"
-
-    final_video.write_videofile(
-        output,
+    video.write_videofile(
+        "final_video.mp4",
         fps=24,
         codec="libx264",
         audio_codec="aac"
     )
 
-    return output
+    return "final_video.mp4"
 
 
 # -------- MAIN --------
@@ -157,18 +145,11 @@ if uploaded_file:
     transcript = uploaded_file.read().decode("utf-8")
 
     if st.button("Generate Video"):
-        try:
-            with st.spinner("Processing... ⏳"):
-                slides_json = generate_slides(transcript)
+        with st.spinner("Creating video..."):
+            slides_json = generate_slides(transcript)
+            script = slides_to_script(slides_json)
+            audio = text_to_audio(script)
+            video = create_video(slides_json, audio)
 
-                script = slides_to_script(slides_json)
-                st.write(f"Script length: {len(script)}")
-
-                audio = text_to_audio(script)
-                video = create_video(slides_json, audio)
-
-            st.success("✅ Video Generated!")
-            st.video(video)
-
-        except Exception as e:
-            st.error(f"❌ Error: {str(e)}")
+        st.success("✅ Done!")
+        st.video(video)
