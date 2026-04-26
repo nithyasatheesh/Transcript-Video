@@ -4,8 +4,7 @@ moviepy==1.0.3
 gtts
 python-dotenv
 Pillow
-requests
+numpy
 imageio
 imageio-ffmpeg
-imageio[pyav]
-numpy
+elevenlabs
