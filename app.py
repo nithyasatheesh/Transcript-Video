@@ -1,22 +1,16 @@
 import os
 import json
+import asyncio
 import streamlit as st
 from moviepy.editor import *
 from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
-
-# ---------- SETUP ----------
-USE_ELEVENLABS = os.getenv("ELEVEN_API_KEY") is not None
-if USE_ELEVENLABS:
-    from elevenlabs import generate, save, set_api_key
-    set_api_key(os.getenv("ELEVEN_API_KEY"))
-else:
-    from gtts import gTTS
+import edge_tts
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.title("🎬 Training Recap Video Generator (Accurate + Ordered)")
+st.title("🎬 Training Recap Video Generator (Natural Voice)")
 
 uploaded_files = st.file_uploader(
     "Upload transcripts",
@@ -33,16 +27,9 @@ def remove_speaker(text, speaker="Ravi"):
         )
     ])
 
-# ---------- CLEAN ----------
-def clean_text(text):
-    banned = ["speaker", "lecture", "session", "today"]
-    for w in banned:
-        text = text.replace(w, "")
-    return text
-
-# ---------- 🔥 CORE FIX: STRUCTURED SLIDES ----------
+# ---------- STRUCTURED SLIDES ----------
 def generate_structured_slides(full_text):
-    response = client.chat.completions.create(
+    res = client.chat.completions.create(
         model="gpt-4o-mini",
         response_format={"type": "json_object"},
         messages=[{
@@ -54,21 +41,19 @@ Return JSON:
 {{
   "slides": [
     {{
-      "title": "Topic name",
-      "points": ["key point", "key point"],
-      "narration": "clear explanation with example if available"
+      "title": "Topic",
+      "points": ["point1", "point2"],
+      "narration": "short clear explanation with example if available"
     }}
   ]
 }}
 
-STRICT RULES:
-- Do NOT miss important topics (e.g., vector database)
-- Maintain logical order
-- One topic per slide
-- Include examples from content if present
-- Use simple corporate language
-- Narration must match slide points
+Rules:
+- Maintain correct topic order
+- Do NOT miss key topics
+- Use short sentences
 - Avoid words: speaker, lecture, session, today
+- Narration must match slide
 
 Text:
 {full_text[:12000]}
@@ -76,32 +61,30 @@ Text:
         }]
     )
 
-    return json.loads(response.choices[0].message.content)["slides"]
+    return json.loads(res.choices[0].message.content)["slides"]
 
-# ---------- AUDIO ----------
+# ---------- EDGE TTS (FEMALE NATURAL) ----------
+async def generate_edge_audio(text, filename):
+    communicate = edge_tts.Communicate(
+        text=text,
+        voice="en-US-AriaNeural",   # 🔥 female natural voice
+        rate="+15%"                 # 🔥 slightly faster
+    )
+    await communicate.save(filename)
+
 def generate_audio(slides):
     files = []
 
-    for i, s in enumerate(slides):
+    for i, slide in enumerate(slides):
         fname = f"audio_{i}.mp3"
-        text = s["narration"]
+        text = slide["narration"]
 
         try:
-            if USE_ELEVENLABS:
-                audio = generate(text=text, voice="Rachel")
-                save(audio, fname)
-            else:
-                gTTS(text, slow=False).save(fname)
-
-            # 🔥 speed fix
-            clip = AudioFileClip(fname)
-            fast = clip.fx(vfx.speedx, 1.15)
-            fast_name = f"fast_{i}.mp3"
-            fast.write_audiofile(fast_name)
-
-            files.append(fast_name)
-
+            asyncio.run(generate_edge_audio(text, fname))
+            files.append(fname)
         except:
+            # fallback (rare)
+            from gtts import gTTS
             gTTS("Overview.", slow=False).save(fname)
             files.append(fname)
 
@@ -122,22 +105,23 @@ def create_slide(text):
 
     lines = text.split("\n")
 
-    w = draw.textbbox((0,0),lines[0],font=title_font)[2]
-    draw.text(((1280-w)//2,80),lines[0],font=title_font,fill=(0,0,0))
+    w = draw.textbbox((0,0), lines[0], font=title_font)[2]
+    draw.text(((1280-w)//2,80), lines[0], font=title_font, fill=(0,0,0))
 
-    y=180
+    y = 180
     for l in lines[1:]:
-        draw.text((100,y),l,font=body_font,fill=(0,0,0))
-        y+=40
+        draw.text((100,y), l, font=body_font, fill=(0,0,0))
+        y += 40
 
     return np.array(img)
 
 # ---------- VIDEO ----------
 def create_video(slides, audio_files):
-    clips, audios = [], []
+    clips = []
+    audios = []
 
-    for i, s in enumerate(slides):
-        text = s["title"] + "\n\n" + "\n".join([f"• {p}" for p in s["points"]])
+    for i, slide in enumerate(slides):
+        text = slide["title"] + "\n\n" + "\n".join([f"• {p}" for p in slide["points"]])
 
         img = create_slide(text)
         audio = AudioFileClip(audio_files[i])
@@ -153,7 +137,7 @@ def create_video(slides, audio_files):
 
     video = video.set_audio(audio)
 
-    # 🎯 duration 3–5 mins
+    # duration control (3–5 min)
     dur = audio.duration
     if dur < 180:
         video = video.fx(vfx.speedx, dur/180)
@@ -181,7 +165,6 @@ if uploaded_files:
                 full_text += "\n\n" + text
 
             slides = generate_structured_slides(full_text)
-
             audio_files = generate_audio(slides)
             video = create_video(slides, audio_files)
 
