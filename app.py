@@ -7,7 +7,7 @@ from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
-# Try importing edge-tts safely
+# Safe import
 try:
     import edge_tts
     EDGE_AVAILABLE = True
@@ -16,7 +16,7 @@ except:
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.title("🎬 Training Recap Video Generator")
+st.title("🎬 Training Recap Video Generator (Clear Voice)")
 
 uploaded_files = st.file_uploader(
     "Upload transcripts",
@@ -49,17 +49,16 @@ Return JSON:
     {{
       "title": "Topic",
       "points": ["point1", "point2"],
-      "narration": "short clear explanation with example if available"
+      "narration": "clear explanation with example"
     }}
   ]
 }}
 
 Rules:
-- Maintain correct topic order
-- Do NOT miss key topics
+- Maintain correct order
+- Include all key topics
 - Use short sentences
-- Avoid words: speaker, lecture, session, today
-- Narration must match slide
+- Avoid: speaker, lecture, session, today
 
 Text:
 {full_text[:12000]}
@@ -69,15 +68,16 @@ Text:
 
     return json.loads(res.choices[0].message.content)["slides"]
 
-# ---------- AUDIO ----------
+# ---------- AUDIO (CLEAR VOICE) ----------
 def generate_audio(slides):
     files = []
 
     async def edge_generate(text, filename):
         communicate = edge_tts.Communicate(
             text=text,
-            voice="en-US-AriaNeural",
-            rate="+15%"
+            voice="en-US-AriaNeural",  # female natural voice
+            rate="+5%",               # 🔥 balanced speed (clear)
+            volume="+0%"
         )
         await communicate.save(filename)
 
@@ -95,9 +95,8 @@ def generate_audio(slides):
                 raise Exception("Edge TTS not available")
 
         except:
-            # fallback (always safe)
             from gtts import gTTS
-            gTTS(text, slow=False).save(fname)
+            gTTS(text).save(fname)
 
         files.append(fname)
 
@@ -160,7 +159,8 @@ def create_video(slides, audio_files):
         "final_video.mp4",
         fps=24,
         codec="libx264",
-        audio_codec="aac"
+        audio_codec="aac",
+        audio_bitrate="192k"   # 🔥 HIGH QUALITY AUDIO
     )
 
     return "final_video.mp4"
