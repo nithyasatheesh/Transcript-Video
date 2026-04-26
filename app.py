@@ -1,6 +1,5 @@
 import os
 import json
-import re
 import streamlit as st
 from moviepy.editor import *
 from openai import OpenAI
@@ -17,15 +16,15 @@ else:
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.title("🎬 Training Recap Video Generator")
+st.title("🎬 Training Recap Video Generator (Full Coverage)")
 
 uploaded_files = st.file_uploader(
-    "Upload transcripts (multiple days)",
+    "Upload transcripts",
     type=["txt"],
     accept_multiple_files=True
 )
 
-# ---------- REMOVE SPEAKER ----------
+# ---------- REMOVE RAVI ----------
 def remove_speaker(text, speaker="Ravi"):
     lines = text.split("\n")
     return "\n".join([
@@ -35,67 +34,33 @@ def remove_speaker(text, speaker="Ravi"):
         )
     ])
 
-# ---------- CLEAN ----------
-def clean_text(text):
-    banned = ["speaker", "lecture", "session", "today"]
-    for w in banned:
-        text = text.replace(w, "")
-    return text
-
-# ---------- SUMMARY ----------
-def summarize_day(text):
+# ---------- EXTRACT TOPICS ----------
+def extract_topics(text):
     res = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{
-            "role": "user",
-            "content": f"Summarize key topics and outcomes clearly:\n{text[:6000]}"
-        }]
-    )
-    return res.choices[0].message.content
-
-# ---------- RECAP ----------
-def generate_recap(summaries):
-    combined = "\n\n".join(summaries)
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
+        response_format={"type": "json_object"},
         messages=[{
             "role": "user",
             "content": f"""
-Create a simple corporate recap.
+Extract ALL key topics.
 
-Do NOT use: speaker, lecture, session, today
+Return JSON:
+{{ "topics": ["topic1", "topic2"] }}
 
-Use short sentences.
+Do NOT miss any important topic.
 
-Content:
-{combined}
+Text:
+{text[:8000]}
 """
         }]
     )
-    return res.choices[0].message.content
+    return json.loads(res.choices[0].message.content)["topics"]
 
-# ---------- SEGMENTS ----------
-def split_segments(text):
-    sentences = text.split(". ")
-    segments, current = [], ""
-
-    for s in sentences:
-        if len(current.split()) < 35:
-            current += s + ". "
-        else:
-            segments.append(current.strip())
-            current = s + ". "
-
-    if current:
-        segments.append(current.strip())
-
-    return segments
-
-# ---------- SLIDES ----------
-def build_slides(segments):
+# ---------- EXPAND TOPICS ----------
+def expand_topics(topics):
     slides = []
 
-    for seg in segments:
+    for topic in topics:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             response_format={"type": "json_object"},
@@ -106,25 +71,25 @@ Create slide + narration.
 
 Return JSON:
 {{
-"title":"Short title",
-"points":["short point","short point"],
-"narration":"short spoken version"
+"title": "{topic}",
+"points": ["short point", "short point"],
+"narration": "2-3 sentence explanation"
 }}
 
-Rules:
-- Short sentences
-- Narration must match slide
+Keep simple corporate language.
+Narration must match slide.
 
-Text:
-{seg}
+Topic:
+{topic}
 """
             }]
         )
+
         slides.append(json.loads(res.choices[0].message.content))
 
     return slides
 
-# ---------- AUDIO (FAST) ----------
+# ---------- AUDIO ----------
 def generate_audio(slides):
     files = []
 
@@ -139,7 +104,7 @@ def generate_audio(slides):
             else:
                 gTTS(text, slow=False).save(fname)
 
-            # 🔥 SPEED FIX (1.2x)
+            # speed up
             clip = AudioFileClip(fname)
             fast = clip.fx(vfx.speedx, 1.2)
             fast_name = f"fast_{i}.mp3"
@@ -198,12 +163,12 @@ def create_video(slides, audio_files):
 
     video = video.set_audio(audio)
 
-    # duration control
+    # ensure 3–5 mins
     dur = audio.duration
     if dur < 180:
         video = video.fx(vfx.speedx, dur/180)
-    elif dur > 240:
-        video = video.fx(vfx.speedx, dur/240)
+    elif dur > 300:
+        video = video.fx(vfx.speedx, dur/300)
 
     video.write_videofile(
         "final_video.mp4",
@@ -216,20 +181,24 @@ def create_video(slides, audio_files):
 
 # ---------- MAIN ----------
 if uploaded_files:
-    if st.button("Generate Recap Video"):
+    if st.button("Generate Full Recap Video"):
         try:
-            summaries = []
+            all_topics = []
 
             for f in uploaded_files:
                 text = f.read().decode("utf-8")
                 text = remove_speaker(text, "Ravi")
-                summaries.append(summarize_day(text))
 
-            recap = clean_text(generate_recap(summaries))
-            st.write(recap)
+                topics = extract_topics(text)
+                all_topics.extend(topics)
 
-            segments = split_segments(recap)
-            slides = build_slides(segments)
+            # remove duplicates
+            all_topics = list(dict.fromkeys(all_topics))
+
+            st.write("### Extracted Topics")
+            st.write(all_topics)
+
+            slides = expand_topics(all_topics)
             audio_files = generate_audio(slides)
 
             video = create_video(slides, audio_files)
