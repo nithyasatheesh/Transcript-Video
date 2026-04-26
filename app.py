@@ -137,8 +137,8 @@ def create_text_image(text):
     body_font_path = os.path.join("fonts", "DejaVuSans.ttf")
 
     try:
-        title_font = ImageFont.truetype(title_font_path, 60)
-        body_font = ImageFont.truetype(body_font_path, 45)
+        title_font = ImageFont.truetype(title_font_path, 80)
+        body_font = ImageFont.truetype(body_font_path, 50)
     except:
         title_font = ImageFont.load_default()
         body_font = ImageFont.load_default()
