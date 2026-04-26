@@ -16,7 +16,7 @@ except:
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.title("🎬 Training Recap Video Generator (Detailed + Longer Video)")
+st.title("🎬 Training Recap Video Generator (Generic + Complete)")
 
 uploaded_files = st.file_uploader(
     "Upload transcripts",
@@ -39,7 +39,7 @@ def add_pauses(text):
     text = text.replace(",", ", ")
     return text
 
-# ---------- STRUCTURED SLIDES (MORE DETAILED) ----------
+# ---------- GENERATE STRUCTURED SLIDES ----------
 def generate_structured_slides(full_text):
     res = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -54,31 +54,26 @@ Return JSON:
   "slides": [
     {{
       "title": "Exact topic name",
-      "points": ["point1", "point2", "point3", "point4", "point5"],
+      "points": ["point1", "point2", "point3", "point4"],
       "narration": "detailed explanation"
     }}
   ]
 }}
 
 RULES:
-
-TOPICS:
-- Cover ALL key topics (vector database, embeddings, RAG, etc.)
 - Maintain original order
-- Each topic = separate slide
+- Each topic must be separate
+- Do NOT miss technical concepts
+- Keep exact terms (no renaming)
 
 SLIDES:
 - 4–6 bullet points
-- Clear and concise
 
 NARRATION:
 - 6–8 short sentences
-- Each sentence 10–12 words
-- Include explanation + example + context
+- Include explanation + example
 
-TONE:
-- Simple corporate language
-- Avoid: speaker, lecture, session, today
+Avoid: speaker, lecture, session, today
 
 Text:
 {full_text[:12000]}
@@ -87,6 +82,64 @@ Text:
     )
 
     return json.loads(res.choices[0].message.content)["slides"]
+
+# ---------- EXTRACT KEY TOPICS ----------
+def extract_key_terms(full_text):
+    res = client.chat.completions.create(
+        model="gpt-4o-mini",
+        response_format={"type": "json_object"},
+        messages=[{
+            "role": "user",
+            "content": f"""
+Extract important technical topics.
+
+Return JSON:
+{{ "topics": ["topic1", "topic2"] }}
+
+Rules:
+- Include ALL important terms
+- Keep exact names (vector database, embeddings, etc.)
+- No generalization
+
+Text:
+{full_text[:8000]}
+"""
+        }]
+    )
+
+    return json.loads(res.choices[0].message.content)["topics"]
+
+# ---------- ENSURE ALL TOPICS INCLUDED ----------
+def ensure_key_topics(slides, key_topics):
+    existing_titles = [s["title"].lower() for s in slides]
+
+    for topic in key_topics:
+        if not any(topic.lower() in t for t in existing_titles):
+
+            slides.append({
+                "title": topic,
+                "points": [
+                    f"{topic} concept overview",
+                    "Used in practical applications",
+                    "Important in system design",
+                    "Common in real-world scenarios"
+                ],
+                "narration": f"{topic} was also covered. It is an important concept. It is used in practical applications. This helps improve system design and performance."
+            })
+
+    return slides
+
+# ---------- ADD SUMMARY ----------
+def add_summary_slide(slides):
+    topics = [s["title"] for s in slides[:8]]
+
+    slides.append({
+        "title": "Key Topics Covered",
+        "points": topics[:6],
+        "narration": "The recap covered key topics including " + ", ".join(topics[:6]) + ". This provided a structured understanding of the overall concepts."
+    })
+
+    return slides
 
 # ---------- AUDIO ----------
 def generate_audio(slides):
@@ -157,9 +210,8 @@ def create_video(slides, audio_files):
         img = create_slide(text)
         audio = AudioFileClip(audio_files[i])
 
-        extra_time = 2.0  # 🔥 longer slide duration
+        extra_time = 2.0
         clip = ImageClip(img).set_duration(audio.duration + extra_time)
-
         clip = clip.fadein(0.4).fadeout(0.4)
 
         clips.append(clip)
@@ -192,6 +244,11 @@ if uploaded_files:
                 full_text += "\n\n" + text
 
             slides = generate_structured_slides(full_text)
+
+            key_topics = extract_key_terms(full_text)
+            slides = ensure_key_topics(slides, key_topics)
+            slides = add_summary_slide(slides)
+
             audio_files = generate_audio(slides)
             video = create_video(slides, audio_files)
 
