@@ -5,6 +5,8 @@ import streamlit as st
 from gtts import gTTS
 from moviepy.editor import *
 from openai import OpenAI
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
 
 # Init OpenAI
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -45,8 +47,7 @@ Format:
   "slides": [
     {{
       "title": "Slide title",
-      "points": ["point1", "point2"],
-      "keywords": ["ai"]
+      "points": ["point1", "point2"]
     }}
   ]
 }}
@@ -55,10 +56,9 @@ Rules:
 - 5–8 slides
 - Max 5 bullet points
 - Short text
-- No explanation outside JSON
 
 Transcript:
-{transcript[:6000]}  # limit for safety
+{transcript[:6000]}
 """
             }
         ]
@@ -77,25 +77,43 @@ def slides_to_script(slides_json):
         script += slide["title"] + ". "
         script += " ".join(slide["points"]) + ". "
 
-    return script[:3000]  # 🔥 prevent gTTS crash
+    return script[:3000]
 
 
 # -------- TEXT TO AUDIO --------
 def text_to_audio(script):
     audio_file = "audio.mp3"
 
+    tts = gTTS(script)
+    tts.save(audio_file)
+
+    if os.path.getsize(audio_file) < 1000:
+        raise ValueError("Audio file corrupted")
+
+    return audio_file
+
+
+# -------- CREATE TEXT IMAGE (NO IMAGEMAGICK) --------
+def create_text_image(text, size=(1280, 720)):
+    img = Image.new("RGB", size, color=(30, 30, 30))
+    draw = ImageDraw.Draw(img)
+
     try:
-        tts = gTTS(script)
-        tts.save(audio_file)
+        title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 60)
+        body_font = ImageFont.truetype("DejaVuSans.ttf", 40)
+    except:
+        title_font = ImageFont.load_default()
+        body_font = ImageFont.load_default()
 
-        # Validate file
-        if os.path.getsize(audio_file) < 1000:
-            raise ValueError("Audio file corrupted")
+    lines = text.split("\n")
 
-        return audio_file
+    y = 100
+    for i, line in enumerate(lines):
+        font = title_font if i == 0 else body_font
+        draw.text((60, y), line, font=font, fill=(255, 255, 255))
+        y += 80
 
-    except Exception as e:
-        raise Exception(f"Audio generation failed: {e}")
+    return np.array(img)
 
 
 # -------- CREATE VIDEO --------
@@ -103,41 +121,18 @@ def create_video(slides_json, audio_file):
     data = safe_json_load(slides_json)
     slides = data["slides"]
 
-    # Load audio safely
     audio = AudioFileClip(audio_file).set_fps(44100)
-
     duration = audio.duration
     slide_duration = duration / len(slides)
 
     clips = []
 
     for slide in slides:
+        text = slide["title"] + "\n\n" + "\n".join([f"• {p}" for p in slide["points"]])
 
-        # Background (SAFE fallback only)
-        bg = ColorClip(size=(1280, 720), color=(30, 30, 30)).set_duration(slide_duration)
+        img_array = create_text_image(text)
 
-        # Title
-        title_clip = TextClip(
-            slide["title"],
-            fontsize=70,
-            color="white",
-            method="caption",
-            size=(1000, None)
-        ).set_position(("center", 80)).set_duration(slide_duration)
-
-        # Bullets
-        bullets = "\n\n".join([f"• {p}" for p in slide["points"]])
-
-        bullet_clip = TextClip(
-            bullets,
-            fontsize=45,
-            color="white",
-            method="caption",
-            size=(1000, None),
-            align="West"
-        ).set_position(("center", 250)).set_duration(slide_duration)
-
-        slide_clip = CompositeVideoClip([bg, title_clip, bullet_clip])
+        slide_clip = ImageClip(img_array).set_duration(slide_duration)
 
         slide_clip = slide_clip.fadein(0.3).fadeout(0.3)
 
@@ -151,7 +146,7 @@ def create_video(slides_json, audio_file):
         output,
         fps=24,
         codec="libx264",
-        audio_codec="aac"   # 🔥 critical fix
+        audio_codec="aac"
     )
 
     return output
@@ -164,7 +159,6 @@ if uploaded_file:
     if st.button("Generate Video"):
         try:
             with st.spinner("Processing... ⏳"):
-
                 slides_json = generate_slides(transcript)
 
                 script = slides_to_script(slides_json)
