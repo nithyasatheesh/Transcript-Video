@@ -17,7 +17,7 @@ else:
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.title("🎬 Faculty Recap Video Generator")
+st.title("🎬 Session Recap Video Generator")
 
 uploaded_file = st.file_uploader("Upload transcript (.txt)", type=["txt"])
 
@@ -31,7 +31,7 @@ def safe_json_load(text):
         return json.loads(match.group())
 
 
-# -------- FACULTY STYLE SUMMARY --------
+# -------- RECAP SUMMARY (PAST TENSE) --------
 def generate_summary(transcript):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -40,15 +40,26 @@ def generate_summary(transcript):
             {
                 "role": "user",
                 "content": f"""
-You are a faculty explaining a recorded lecture.
+Create a recap of this session in PAST TENSE.
 
-Create a recap like a teacher explaining to students.
+IMPORTANT:
+- Use past tense only (covered, discussed, explained)
+- Do NOT use present tense
 
 Style:
-- Natural conversational tone
-- Explain clearly
-- Add simple examples if needed
-- Smooth flow (not bullet points)
+- Start with: "In this session, we covered..."
+- Then continue with:
+  "We discussed..."
+  "Then we explored..."
+  "After that, we looked at..."
+  "Finally, we concluded..."
+
+Tone:
+- Natural
+- Smooth storytelling
+- Like summarizing a completed lecture
+
+Keep it suitable for 3–5 minute narration.
 
 Transcript:
 {transcript[:8000]}
@@ -59,7 +70,22 @@ Transcript:
     return response.choices[0].message.content
 
 
-# -------- SLIDES FROM SUMMARY --------
+# -------- FORCE PAST TENSE (SAFETY) --------
+def enforce_past_tense(text):
+    replacements = {
+        "we discuss": "we discussed",
+        "we explain": "we explained",
+        "we explore": "we explored",
+        "we look at": "we looked at",
+        "we cover": "we covered",
+        "we learn": "we learned",
+    }
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    return text
+
+
+# -------- SLIDES --------
 def generate_slides(summary):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -69,24 +95,24 @@ def generate_slides(summary):
             {
                 "role": "user",
                 "content": f"""
-Convert this teaching explanation into slides.
+Convert this recap into slides.
 
 Return JSON:
 {{
   "slides": [
     {{
-      "title": "Title",
-      "points": ["point1", "point2"]
+      "title": "Short title",
+      "points": ["short point", "short point"]
     }}
   ]
 }}
 
 Rules:
 - 6–8 slides
-- MAX 3 bullet points per slide
-- Very short text (for big font)
+- Max 3 bullet points
+- VERY short text (keywords only)
 
-Summary:
+Recap:
 {summary}
 """
             }
@@ -128,8 +154,8 @@ def create_text_image(text):
     body_font_path = os.path.join(base_dir, "fonts", "DejaVuSans.ttf")
 
     try:
-        title_font = ImageFont.truetype(title_font_path, 140)
-        body_font = ImageFont.truetype(body_font_path, 90)
+        title_font = ImageFont.truetype(title_font_path, 60)
+        body_font = ImageFont.truetype(body_font_path, 30)
     except:
         title_font = ImageFont.load_default()
         body_font = ImageFont.load_default()
@@ -141,6 +167,7 @@ def create_text_image(text):
     text_width = bbox[2] - bbox[0]
     draw.text(((1280 - text_width) // 2, 80), lines[0], font=title_font, fill=(0, 0, 0))
 
+    # Bullets
     y = 300
     for line in lines[1:]:
         draw.text((120, y), line, font=body_font, fill=(0, 0, 0))
@@ -149,36 +176,27 @@ def create_text_image(text):
     return np.array(img)
 
 
-# -------- VIDEO (SYNCED) --------
-def create_video(slides_json, audio_file, narration_text):
+# -------- VIDEO --------
+def create_video(slides_json, audio_file):
     data = safe_json_load(slides_json)
     slides = data["slides"]
 
     audio = AudioFileClip(audio_file).set_fps(44100)
 
+    total_duration = audio.duration
+    slide_duration = total_duration / len(slides)
+
     clips = []
-    current_time = 0
 
-    # Split narration into parts
-    sentences = narration_text.split(". ")
-
-    for i, slide in enumerate(slides):
+    for slide in slides:
         text = slide["title"] + "\n\n" + "\n".join([f"• {p}" for p in slide["points"]])
 
-        # Assign narration chunk
-        chunk = " ".join(sentences[i::len(slides)])
-
-        word_count = len(chunk.split())
-        duration = max(6, word_count / 2.2)
-
         img = create_text_image(text)
-
-        clip = ImageClip(img).set_start(current_time).set_duration(duration)
+        clip = ImageClip(img).set_duration(slide_duration)
 
         clips.append(clip)
-        current_time += duration
 
-    video = CompositeVideoClip(clips).set_audio(audio)
+    video = concatenate_videoclips(clips).set_audio(audio)
 
     video.write_videofile(
         "final_video.mp4",
@@ -196,18 +214,18 @@ if uploaded_file:
 
     if st.button("Generate Recap Video"):
         try:
-            with st.spinner("Generating explanation..."):
+            with st.spinner("Generating recap..."):
                 summary = generate_summary(transcript)
+                summary = enforce_past_tense(summary)
 
-            st.subheader("📄 Faculty Explanation")
+            st.subheader("📄 Recap")
             st.write(summary)
 
             with st.spinner("Creating video..."):
                 slides_json = generate_slides(summary)
 
-                audio = text_to_audio(summary)   # 🔥 use natural narration
-
-                video = create_video(slides_json, audio, summary)
+                audio = text_to_audio(summary)  # narration = recap
+                video = create_video(slides_json, audio)
 
             st.success("✅ Video Ready!")
             st.video(video)
