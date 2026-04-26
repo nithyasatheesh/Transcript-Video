@@ -7,7 +7,7 @@ from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
-# Voice setup
+# -------- SETUP --------
 USE_ELEVENLABS = os.getenv("ELEVEN_API_KEY") is not None
 if USE_ELEVENLABS:
     from elevenlabs import generate, save, set_api_key
@@ -25,39 +25,52 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-# -------- SAFE JSON --------
-def safe_json_load(text):
-    try:
-        return json.loads(text)
-    except:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        return json.loads(match.group())
+# -------- REMOVE RAVI --------
+def remove_speaker(text, speaker="Ravi"):
+    lines = text.split("\n")
+    cleaned = []
 
-# -------- DAILY SUMMARY --------
-def summarize_day(transcript):
+    for line in lines:
+        l = line.strip().lower()
+        if l.startswith(speaker.lower() + ":") or \
+           l.startswith(speaker.lower() + " -") or \
+           l.startswith(speaker.lower() + "("):
+            continue
+        cleaned.append(line)
+
+    return "\n".join(cleaned)
+
+# -------- CLEAN TEXT --------
+def clean_text(text):
+    banned = ["speaker", "lecture", "session", "today"]
+    for w in banned:
+        text = text.replace(w, "")
+    return text
+
+# -------- SUMMARY --------
+def summarize_day(text):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0.3,
         messages=[{
             "role": "user",
             "content": f"""
-Summarize this training content.
+Summarize training content simply.
 
 Focus on:
 - Key topics
 - Outcomes
-- Keep concise
 
 Text:
-{transcript[:6000]}
+{text[:6000]}
 """
         }]
     )
     return response.choices[0].message.content
 
 # -------- MODULE RECAP --------
-def generate_module_recap(day_summaries):
-    combined = "\n\n".join(day_summaries)
+def generate_recap(summaries):
+    combined = "\n\n".join(summaries)
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -68,8 +81,7 @@ def generate_module_recap(day_summaries):
 Create a simple professional recap.
 
 STRICT:
-- Do NOT use: speaker, lecture, session
-- Use simple corporate language
+- Do NOT use: speaker, lecture, session, today
 
 Style:
 - The training started with...
@@ -83,19 +95,11 @@ Content:
 """
         }]
     )
-
     return response.choices[0].message.content
 
-# -------- CLEAN TEXT --------
-def clean_text(text):
-    banned = ["speaker", "lecture", "session"]
-    for word in banned:
-        text = text.replace(word, "")
-    return text
-
 # -------- SEGMENTS --------
-def split_into_segments(summary):
-    sentences = summary.split(". ")
+def split_segments(text):
+    sentences = text.split(". ")
     segments = []
     current = ""
 
@@ -111,31 +115,28 @@ def split_into_segments(summary):
 
     return segments
 
-# -------- BUILD SLIDE + NARRATION (KEY FIX) --------
-def build_slide_content(segments):
+# -------- SLIDE + NARRATION --------
+def build_slides(segments):
     slides = []
 
     for seg in segments:
-        response = client.chat.completions.create(
+        res = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0,
             response_format={"type": "json_object"},
             messages=[{
                 "role": "user",
                 "content": f"""
-Create slide and narration from this.
+Create slide + narration.
 
 Return JSON:
 {{
-  "title": "Short title",
-  "points": ["short point", "short point"],
-  "narration": "spoken version of same content"
+"title":"Short title",
+"points":["point","point"],
+"narration":"spoken version"
 }}
 
-Rules:
-- Max 3 bullets
-- Simple wording
-- Narration MUST match slide content
+Narration MUST match slide.
 
 Text:
 {seg}
@@ -143,89 +144,86 @@ Text:
             }]
         )
 
-        slides.append(safe_json_load(response.choices[0].message.content))
+        slides.append(json.loads(res.choices[0].message.content))
 
     return slides
 
 # -------- AUDIO --------
-def generate_audio_from_slides(slides):
+def generate_audio(slides):
     files = []
 
-    for i, slide in enumerate(slides):
-        text = slide["narration"]
+    for i, s in enumerate(slides):
         fname = f"audio_{i}.mp3"
+        text = s["narration"]
 
-        if USE_ELEVENLABS:
-            audio = generate(
-                text=text,
-                voice="Rachel",
-                model="eleven_multilingual_v2"
-            )
-            save(audio, fname)
-        else:
-            tts = gTTS(text, slow=False)
-            tts.save(fname)
+        try:
+            if USE_ELEVENLABS:
+                audio = generate(text=text, voice="Rachel")
+                save(audio, fname)
+            else:
+                gTTS(text, slow=False).save(fname)
+
+            if os.path.getsize(fname) < 1000:
+                raise Exception("bad audio")
+
+        except:
+            gTTS("Overview of content.", slow=False).save(fname)
 
         files.append(fname)
 
     return files
 
 # -------- IMAGE --------
-def create_text_image(text):
-    img = Image.new("RGB", (1280, 720), color=(255, 255, 255))
+def create_slide_image(text):
+    img = Image.new("RGB", (1280,720), (255,255,255))
     draw = ImageDraw.Draw(img)
 
-    base_dir = os.path.dirname(__file__)
-    title_font_path = os.path.join(base_dir, "fonts", "DejaVuSans-Bold.ttf")
-    body_font_path = os.path.join(base_dir, "fonts", "DejaVuSans.ttf")
-
+    base = os.path.dirname(__file__)
     try:
-        title_font = ImageFont.truetype(title_font_path, 55)
-        body_font = ImageFont.truetype(body_font_path, 20)
+        title_font = ImageFont.truetype(os.path.join(base,"fonts/DejaVuSans-Bold.ttf"),55)
+        body_font = ImageFont.truetype(os.path.join(base,"fonts/DejaVuSans.ttf"),20)
     except:
         title_font = ImageFont.load_default()
         body_font = ImageFont.load_default()
 
     lines = text.split("\n")
 
-    bbox = draw.textbbox((0, 0), lines[0], font=title_font)
-    text_width = bbox[2] - bbox[0]
-    draw.text(((1280 - text_width)//2, 80), lines[0], font=title_font, fill=(0,0,0))
+    w = draw.textbbox((0,0),lines[0],font=title_font)[2]
+    draw.text(((1280-w)//2,80),lines[0],font=title_font,fill=(0,0,0))
 
-    y = 180
-    for line in lines[1:]:
-        draw.text((100, y), line, font=body_font, fill=(0,0,0))
-        y += 40
+    y=180
+    for l in lines[1:]:
+        draw.text((100,y),l,font=body_font,fill=(0,0,0))
+        y+=40
 
     return np.array(img)
 
 # -------- VIDEO --------
 def create_video(slides, audio_files):
-    clips = []
-    audio_clips = []
-    current_time = 0
+    vclips = []
+    aclips = []
 
-    for i, slide in enumerate(slides):
-        text = slide["title"] + "\n\n" + "\n".join([f"• {p}" for p in slide["points"]])
-
-        img = create_text_image(text)
+    for i, s in enumerate(slides):
+        text = s["title"] + "\n\n" + "\n".join([f"• {p}" for p in s["points"]])
+        img = create_slide_image(text)
         audio = AudioFileClip(audio_files[i])
 
-        clip = ImageClip(img).set_start(current_time).set_duration(audio.duration)
+        vclips.append(ImageClip(img).set_duration(audio.duration))
+        aclips.append(audio)
 
-        clips.append(clip)
-        audio_clips.append(audio)
+    video = concatenate_videoclips(vclips)
+    audio = concatenate_audioclips(aclips)
 
-        current_time += audio.duration
+    # duration 3–4 mins
+    dur = audio.duration
+    if dur < 180:
+        factor = 180/dur
+        video = video.fx(vfx.speedx, 1/factor)
+    elif dur > 240:
+        factor = 240/dur
+        video = video.fx(vfx.speedx, 1/factor)
 
-    final_audio = concatenate_audioclips(audio_clips)
-
-    total_duration = final_audio.duration
-    if total_duration < 180:
-        factor = 180 / total_duration
-        clips = [c.set_duration(c.duration * factor) for c in clips]
-
-    video = CompositeVideoClip(clips).set_audio(final_audio)
+    video = video.set_audio(audio)
 
     video.write_videofile(
         "final_video.mp4",
@@ -240,28 +238,24 @@ def create_video(slides, audio_files):
 if uploaded_files:
     if st.button("Generate Recap Video"):
         try:
-            day_summaries = []
+            summaries = []
 
-            with st.spinner("Processing transcripts..."):
-                for f in uploaded_files:
-                    text = f.read().decode("utf-8")
-                    day_summaries.append(summarize_day(text))
+            for f in uploaded_files:
+                text = f.read().decode("utf-8")
+                text = remove_speaker(text, "Ravi")  # 🔥 remove Ravi
+                summaries.append(summarize_day(text))
 
-            recap = generate_module_recap(day_summaries)
-            recap = clean_text(recap)
-
-            st.subheader("📄 Recap")
+            recap = clean_text(generate_recap(summaries))
             st.write(recap)
 
-            segments = split_into_segments(recap)
-
-            slides = build_slide_content(segments)  # 🔥 key fix
-            audio_files = generate_audio_from_slides(slides)
+            segments = split_segments(recap)
+            slides = build_slides(segments)
+            audio_files = generate_audio(slides)
 
             video = create_video(slides, audio_files)
 
-            st.success("✅ Video Ready!")
+            st.success("✅ Video Ready")
             st.video(video)
 
         except Exception as e:
-            st.error(f"❌ Error: {str(e)}")
+            st.error(str(e))
