@@ -16,7 +16,7 @@ except:
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.title("🎬 Training Recap Video Generator (Clear Voice)")
+st.title("🎬 Training Recap Video Generator (Detailed Recap)")
 
 uploaded_files = st.file_uploader(
     "Upload transcripts",
@@ -39,7 +39,7 @@ def add_pauses(text):
     text = text.replace(",", ", ")
     return text
 
-# ---------- STRUCTURED SLIDES ----------
+# ---------- STRUCTURED SLIDES (UPDATED) ----------
 def generate_structured_slides(full_text):
     res = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -54,18 +54,31 @@ Return JSON:
   "slides": [
     {{
       "title": "Topic",
-      "points": ["point1", "point2"],
-      "narration": "short sentences with pauses"
+      "points": ["point1", "point2", "point3", "point4"],
+      "narration": "multiple short sentences explaining topic with example"
     }}
   ]
 }}
 
 STRICT RULES:
-- Use VERY short sentences (10–12 words max)
-- Add commas for natural pauses
-- Avoid long explanations
+
+CONTENT:
+- Cover ALL important topics
 - Maintain correct order
-- Include all key topics
+- Include examples where available
+
+SLIDES:
+- 3 to 5 bullet points
+- Keep bullets short and clear
+
+NARRATION:
+- Use short sentences (10–12 words each)
+- Include 4–6 sentences per slide
+- Explain concept clearly
+- Add simple example if available
+
+TONE:
+- Simple corporate language
 - Avoid: speaker, lecture, session, today
 
 Text:
@@ -76,15 +89,15 @@ Text:
 
     return json.loads(res.choices[0].message.content)["slides"]
 
-# ---------- AUDIO (CLEAR VOICE) ----------
+# ---------- AUDIO ----------
 def generate_audio(slides):
     files = []
 
     async def edge_generate(text, filename):
         communicate = edge_tts.Communicate(
             text=text,
-            voice="en-US-AriaNeural",  # natural female
-            rate="+0%",               # 🔥 no speed distortion
+            voice="en-US-AriaNeural",
+            rate="+0%",
             pitch="+0Hz"
         )
         await communicate.save(filename)
@@ -145,7 +158,8 @@ def create_video(slides, audio_files):
         img = create_slide(text)
         audio = AudioFileClip(audio_files[i])
 
-        clip = ImageClip(img).set_duration(audio.duration)
+        # slight pause added (+0.5 sec)
+        clip = ImageClip(img).set_duration(audio.duration + 0.5)
         clip = clip.fadein(0.3).fadeout(0.3)
 
         clips.append(clip)
