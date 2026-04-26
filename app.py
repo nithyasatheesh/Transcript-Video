@@ -28,15 +28,12 @@ uploaded_files = st.file_uploader(
 # ---------- REMOVE SPEAKER ----------
 def remove_speaker(text, speaker="Ravi"):
     lines = text.split("\n")
-    cleaned = []
-    for line in lines:
-        l = line.strip().lower()
-        if l.startswith(speaker.lower() + ":") or \
-           l.startswith(speaker.lower() + " -") or \
-           l.startswith(speaker.lower() + "("):
-            continue
-        cleaned.append(line)
-    return "\n".join(cleaned)
+    return "\n".join([
+        l for l in lines
+        if not l.strip().lower().startswith(
+            (speaker.lower()+":", speaker.lower()+" -", speaker.lower()+"(")
+        )
+    ])
 
 # ---------- CLEAN ----------
 def clean_text(text):
@@ -45,18 +42,18 @@ def clean_text(text):
         text = text.replace(w, "")
     return text
 
-# ---------- DAILY SUMMARY ----------
+# ---------- SUMMARY ----------
 def summarize_day(text):
     res = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{
             "role": "user",
-            "content": f"Summarize key topics and outcomes:\n{text[:6000]}"
+            "content": f"Summarize key topics and outcomes clearly:\n{text[:6000]}"
         }]
     )
     return res.choices[0].message.content
 
-# ---------- MODULE RECAP ----------
+# ---------- RECAP ----------
 def generate_recap(summaries):
     combined = "\n\n".join(summaries)
     res = client.chat.completions.create(
@@ -64,16 +61,11 @@ def generate_recap(summaries):
         messages=[{
             "role": "user",
             "content": f"""
-Create a simple professional recap.
+Create a simple corporate recap.
 
 Do NOT use: speaker, lecture, session, today
 
-Style:
-- The training started with...
-- Key topics included...
-- The focus then moved to...
-- Important areas covered were...
-- The program concluded with...
+Use short sentences.
 
 Content:
 {combined}
@@ -88,7 +80,7 @@ def split_segments(text):
     segments, current = [], ""
 
     for s in sentences:
-        if len(current.split()) < 45:
+        if len(current.split()) < 35:
             current += s + ". "
         else:
             segments.append(current.strip())
@@ -99,7 +91,7 @@ def split_segments(text):
 
     return segments
 
-# ---------- SLIDES + NARRATION ----------
+# ---------- SLIDES ----------
 def build_slides(segments):
     slides = []
 
@@ -115,11 +107,13 @@ Create slide + narration.
 Return JSON:
 {{
 "title":"Short title",
-"points":["point","point"],
-"narration":"spoken version"
+"points":["short point","short point"],
+"narration":"short spoken version"
 }}
 
-Narration must match slide.
+Rules:
+- Short sentences
+- Narration must match slide
 
 Text:
 {seg}
@@ -130,7 +124,7 @@ Text:
 
     return slides
 
-# ---------- AUDIO ----------
+# ---------- AUDIO (FAST) ----------
 def generate_audio(slides):
     files = []
 
@@ -145,13 +139,17 @@ def generate_audio(slides):
             else:
                 gTTS(text, slow=False).save(fname)
 
-            if os.path.getsize(fname) < 1000:
-                raise Exception()
+            # 🔥 SPEED FIX (1.2x)
+            clip = AudioFileClip(fname)
+            fast = clip.fx(vfx.speedx, 1.2)
+            fast_name = f"fast_{i}.mp3"
+            fast.write_audiofile(fast_name)
+
+            files.append(fast_name)
 
         except:
             gTTS("Overview.", slow=False).save(fname)
-
-        files.append(fname)
+            files.append(fname)
 
     return files
 
@@ -182,12 +180,10 @@ def create_slide(text):
 
 # ---------- VIDEO ----------
 def create_video(slides, audio_files):
-    clips = []
-    audios = []
+    clips, audios = [], []
 
     for i, s in enumerate(slides):
         text = s["title"] + "\n\n" + "\n".join([f"• {p}" for p in s["points"]])
-
         img = create_slide(text)
         audio = AudioFileClip(audio_files[i])
 
