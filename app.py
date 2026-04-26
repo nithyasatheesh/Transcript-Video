@@ -43,8 +43,10 @@ def summarize_day(transcript):
             "content": f"""
 Summarize this training content.
 
-Focus on key topics and outcomes.
-Keep it simple and concise.
+Focus on:
+- Key topics
+- Outcomes
+- Keep concise
 
 Text:
 {transcript[:6000]}
@@ -67,7 +69,7 @@ Create a simple professional recap.
 
 STRICT:
 - Do NOT use: speaker, lecture, session
-- Use simple language
+- Use simple corporate language
 
 Style:
 - The training started with...
@@ -75,8 +77,6 @@ Style:
 - The focus then moved to...
 - Important areas covered were...
 - The program concluded with...
-
-Keep it natural and clear.
 
 Content:
 {combined}
@@ -111,8 +111,8 @@ def split_into_segments(summary):
 
     return segments
 
-# -------- SLIDES --------
-def generate_slides(segments):
+# -------- BUILD SLIDE + NARRATION (KEY FIX) --------
+def build_slide_content(segments):
     slides = []
 
     for seg in segments:
@@ -123,15 +123,19 @@ def generate_slides(segments):
             messages=[{
                 "role": "user",
                 "content": f"""
-Create a clean slide.
+Create slide and narration from this.
 
 Return JSON:
 {{
   "title": "Short title",
-  "points": ["short point", "short point"]
+  "points": ["short point", "short point"],
+  "narration": "spoken version of same content"
 }}
 
-Max 3 bullets.
+Rules:
+- Max 3 bullets
+- Simple wording
+- Narration MUST match slide content
 
 Text:
 {seg}
@@ -144,25 +148,26 @@ Text:
     return slides
 
 # -------- AUDIO --------
-def text_to_audio(text, filename):
-    if USE_ELEVENLABS:
-        audio = generate(
-            text=text,
-            voice="Rachel",
-            model="eleven_multilingual_v2"
-        )
-        save(audio, filename)
-    else:
-        tts = gTTS(text, slow=False)
-        tts.save(filename)
-
-    return filename
-
-def generate_audio_segments(segments):
+def generate_audio_from_slides(slides):
     files = []
-    for i, seg in enumerate(segments):
+
+    for i, slide in enumerate(slides):
+        text = slide["narration"]
         fname = f"audio_{i}.mp3"
-        files.append(text_to_audio(seg, fname))
+
+        if USE_ELEVENLABS:
+            audio = generate(
+                text=text,
+                voice="Rachel",
+                model="eleven_multilingual_v2"
+            )
+            save(audio, fname)
+        else:
+            tts = gTTS(text, slow=False)
+            tts.save(fname)
+
+        files.append(fname)
+
     return files
 
 # -------- IMAGE --------
@@ -183,12 +188,10 @@ def create_text_image(text):
 
     lines = text.split("\n")
 
-    # Title
     bbox = draw.textbbox((0, 0), lines[0], font=title_font)
     text_width = bbox[2] - bbox[0]
     draw.text(((1280 - text_width)//2, 80), lines[0], font=title_font, fill=(0,0,0))
 
-    # Bullets
     y = 180
     for line in lines[1:]:
         draw.text((100, y), line, font=body_font, fill=(0,0,0))
@@ -239,7 +242,7 @@ if uploaded_files:
         try:
             day_summaries = []
 
-            with st.spinner("Processing..."):
+            with st.spinner("Processing transcripts..."):
                 for f in uploaded_files:
                     text = f.read().decode("utf-8")
                     day_summaries.append(summarize_day(text))
@@ -251,8 +254,9 @@ if uploaded_files:
             st.write(recap)
 
             segments = split_into_segments(recap)
-            slides = generate_slides(segments)
-            audio_files = generate_audio_segments(segments)
+
+            slides = build_slide_content(segments)  # 🔥 key fix
+            audio_files = generate_audio_from_slides(slides)
 
             video = create_video(slides, audio_files)
 
