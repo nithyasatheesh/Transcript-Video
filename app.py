@@ -7,7 +7,7 @@ from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
-# -------- SETUP --------
+# ---------- SETUP ----------
 USE_ELEVENLABS = os.getenv("ELEVEN_API_KEY") is not None
 if USE_ELEVENLABS:
     from elevenlabs import generate, save, set_api_key
@@ -20,16 +20,15 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 st.title("🎬 Training Recap Video Generator")
 
 uploaded_files = st.file_uploader(
-    "Upload daily transcripts",
+    "Upload transcripts (multiple days)",
     type=["txt"],
     accept_multiple_files=True
 )
 
-# -------- REMOVE RAVI --------
+# ---------- REMOVE SPEAKER ----------
 def remove_speaker(text, speaker="Ravi"):
     lines = text.split("\n")
     cleaned = []
-
     for line in lines:
         l = line.strip().lower()
         if l.startswith(speaker.lower() + ":") or \
@@ -37,51 +36,37 @@ def remove_speaker(text, speaker="Ravi"):
            l.startswith(speaker.lower() + "("):
             continue
         cleaned.append(line)
-
     return "\n".join(cleaned)
 
-# -------- CLEAN TEXT --------
+# ---------- CLEAN ----------
 def clean_text(text):
     banned = ["speaker", "lecture", "session", "today"]
     for w in banned:
         text = text.replace(w, "")
     return text
 
-# -------- SUMMARY --------
+# ---------- DAILY SUMMARY ----------
 def summarize_day(text):
-    response = client.chat.completions.create(
+    res = client.chat.completions.create(
         model="gpt-4o-mini",
-        temperature=0.3,
         messages=[{
             "role": "user",
-            "content": f"""
-Summarize training content simply.
-
-Focus on:
-- Key topics
-- Outcomes
-
-Text:
-{text[:6000]}
-"""
+            "content": f"Summarize key topics and outcomes:\n{text[:6000]}"
         }]
     )
-    return response.choices[0].message.content
+    return res.choices[0].message.content
 
-# -------- MODULE RECAP --------
+# ---------- MODULE RECAP ----------
 def generate_recap(summaries):
     combined = "\n\n".join(summaries)
-
-    response = client.chat.completions.create(
+    res = client.chat.completions.create(
         model="gpt-4o-mini",
-        temperature=0.4,
         messages=[{
             "role": "user",
             "content": f"""
 Create a simple professional recap.
 
-STRICT:
-- Do NOT use: speaker, lecture, session, today
+Do NOT use: speaker, lecture, session, today
 
 Style:
 - The training started with...
@@ -95,13 +80,12 @@ Content:
 """
         }]
     )
-    return response.choices[0].message.content
+    return res.choices[0].message.content
 
-# -------- SEGMENTS --------
+# ---------- SEGMENTS ----------
 def split_segments(text):
     sentences = text.split(". ")
-    segments = []
-    current = ""
+    segments, current = [], ""
 
     for s in sentences:
         if len(current.split()) < 45:
@@ -115,14 +99,13 @@ def split_segments(text):
 
     return segments
 
-# -------- SLIDE + NARRATION --------
+# ---------- SLIDES + NARRATION ----------
 def build_slides(segments):
     slides = []
 
     for seg in segments:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
-            temperature=0,
             response_format={"type": "json_object"},
             messages=[{
                 "role": "user",
@@ -136,19 +119,18 @@ Return JSON:
 "narration":"spoken version"
 }}
 
-Narration MUST match slide.
+Narration must match slide.
 
 Text:
 {seg}
 """
             }]
         )
-
         slides.append(json.loads(res.choices[0].message.content))
 
     return slides
 
-# -------- AUDIO --------
+# ---------- AUDIO ----------
 def generate_audio(slides):
     files = []
 
@@ -164,17 +146,17 @@ def generate_audio(slides):
                 gTTS(text, slow=False).save(fname)
 
             if os.path.getsize(fname) < 1000:
-                raise Exception("bad audio")
+                raise Exception()
 
         except:
-            gTTS("Overview of content.", slow=False).save(fname)
+            gTTS("Overview.", slow=False).save(fname)
 
         files.append(fname)
 
     return files
 
-# -------- IMAGE --------
-def create_slide_image(text):
+# ---------- IMAGE ----------
+def create_slide(text):
     img = Image.new("RGB", (1280,720), (255,255,255))
     draw = ImageDraw.Draw(img)
 
@@ -198,32 +180,34 @@ def create_slide_image(text):
 
     return np.array(img)
 
-# -------- VIDEO --------
+# ---------- VIDEO ----------
 def create_video(slides, audio_files):
-    vclips = []
-    aclips = []
+    clips = []
+    audios = []
 
     for i, s in enumerate(slides):
         text = s["title"] + "\n\n" + "\n".join([f"• {p}" for p in s["points"]])
-        img = create_slide_image(text)
+
+        img = create_slide(text)
         audio = AudioFileClip(audio_files[i])
 
-        vclips.append(ImageClip(img).set_duration(audio.duration))
-        aclips.append(audio)
+        clip = ImageClip(img).set_duration(audio.duration)
+        clip = clip.fadein(0.3).fadeout(0.3)
 
-    video = concatenate_videoclips(vclips)
-    audio = concatenate_audioclips(aclips)
+        clips.append(clip)
+        audios.append(audio)
 
-    # duration 3–4 mins
-    dur = audio.duration
-    if dur < 180:
-        factor = 180/dur
-        video = video.fx(vfx.speedx, 1/factor)
-    elif dur > 240:
-        factor = 240/dur
-        video = video.fx(vfx.speedx, 1/factor)
+    video = concatenate_videoclips(clips, method="compose")
+    audio = concatenate_audioclips(audios)
 
     video = video.set_audio(audio)
+
+    # duration control
+    dur = audio.duration
+    if dur < 180:
+        video = video.fx(vfx.speedx, dur/180)
+    elif dur > 240:
+        video = video.fx(vfx.speedx, dur/240)
 
     video.write_videofile(
         "final_video.mp4",
@@ -234,7 +218,7 @@ def create_video(slides, audio_files):
 
     return "final_video.mp4"
 
-# -------- MAIN --------
+# ---------- MAIN ----------
 if uploaded_files:
     if st.button("Generate Recap Video"):
         try:
@@ -242,7 +226,7 @@ if uploaded_files:
 
             for f in uploaded_files:
                 text = f.read().decode("utf-8")
-                text = remove_speaker(text, "Ravi")  # 🔥 remove Ravi
+                text = remove_speaker(text, "Ravi")
                 summaries.append(summarize_day(text))
 
             recap = clean_text(generate_recap(summaries))
