@@ -108,13 +108,13 @@ def text_to_audio(script):
 
 
 # -------- CREATE TEXT IMAGE --------
-def create_text_image(text, size=(1280, 720)):
+def create_text_image(text, size=(5280, 1720)):
     img = Image.new("RGB", size, color=(255, 255, 255))
     draw = ImageDraw.Draw(img)
 
     try:
-        title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 120)
-        body_font = ImageFont.truetype("DejaVuSans.ttf", 75)
+        title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 600)
+        body_font = ImageFont.truetype("DejaVuSans.ttf", 375)
     except:
         title_font = ImageFont.load_default()
         body_font = ImageFont.load_default()
