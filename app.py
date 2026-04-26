@@ -6,11 +6,17 @@ from moviepy.editor import *
 from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
-import edge_tts
+
+# Try importing edge-tts safely
+try:
+    import edge_tts
+    EDGE_AVAILABLE = True
+except:
+    EDGE_AVAILABLE = False
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-st.title("🎬 Training Recap Video Generator (Natural Voice)")
+st.title("🎬 Training Recap Video Generator")
 
 uploaded_files = st.file_uploader(
     "Upload transcripts",
@@ -63,30 +69,37 @@ Text:
 
     return json.loads(res.choices[0].message.content)["slides"]
 
-# ---------- EDGE TTS (FEMALE NATURAL) ----------
-async def generate_edge_audio(text, filename):
-    communicate = edge_tts.Communicate(
-        text=text,
-        voice="en-US-AriaNeural",   # 🔥 female natural voice
-        rate="+15%"                 # 🔥 slightly faster
-    )
-    await communicate.save(filename)
-
+# ---------- AUDIO ----------
 def generate_audio(slides):
     files = []
+
+    async def edge_generate(text, filename):
+        communicate = edge_tts.Communicate(
+            text=text,
+            voice="en-US-AriaNeural",
+            rate="+15%"
+        )
+        await communicate.save(filename)
 
     for i, slide in enumerate(slides):
         fname = f"audio_{i}.mp3"
         text = slide["narration"]
 
         try:
-            asyncio.run(generate_edge_audio(text, fname))
-            files.append(fname)
+            if EDGE_AVAILABLE:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(edge_generate(text, fname))
+                loop.close()
+            else:
+                raise Exception("Edge TTS not available")
+
         except:
-            # fallback (rare)
+            # fallback (always safe)
             from gtts import gTTS
-            gTTS("Overview.", slow=False).save(fname)
-            files.append(fname)
+            gTTS(text, slow=False).save(fname)
+
+        files.append(fname)
 
     return files
 
@@ -117,8 +130,7 @@ def create_slide(text):
 
 # ---------- VIDEO ----------
 def create_video(slides, audio_files):
-    clips = []
-    audios = []
+    clips, audios = [], []
 
     for i, slide in enumerate(slides):
         text = slide["title"] + "\n\n" + "\n".join([f"• {p}" for p in slide["points"]])
