@@ -1,7 +1,10 @@
 streamlit
-openai
-moviepy
+openai>=1.0.0
+moviepy==1.0.3
 gtts
 python-dotenv
 Pillow
 requests
+imageio
+imageio-ffmpeg
+numpy
